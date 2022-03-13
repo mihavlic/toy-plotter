@@ -1,0 +1,11 @@
+[default]
+name=Default
+runtime=host
+toolchain=default
+config-opts=
+run-opts="2 + 1"
+prefix=/home/eg/.var/app/org.gnome.Builder/cache/gnome-builder/install/plotter/host
+app-id=
+postbuild=
+prebuild=
+default=true
