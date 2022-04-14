@@ -4,9 +4,9 @@
 #include <math.h>
 #include <unistd.h>
 
-#include<ncurses.h>
+#include <ncurses.h>
 
-void eat_shit_and_die(char* err) {
+_Noreturn void eat_shit_and_die(char* err) {
     fputs(err, stderr);
     fputs("\n", stderr);
     exit(-1);
@@ -206,7 +206,6 @@ case what: \
             OPERATOR_CASE_DOUBLE('<', '=', Lower, LowerEqual)
             default:
                 eat_shit_and_die("Unknown char");
-                goto end;
         }
 
         finish_token:
@@ -220,7 +219,6 @@ case what: \
         nxt = *++c;
     }
 
-    end:
     return tokens;
 }
 
@@ -247,7 +245,6 @@ case what: \
         FORMAT_CASE(RParen)
         default:
             eat_shit_and_die("Unhandled operator");
-            return "Error";
     }
 }
 
@@ -271,8 +268,7 @@ int operator_precedence(Token* token) {
     }
 }
 
-#define NEW(type) \
-    (type*)malloc(sizeof(type))
+#define NEW(type) (type*)malloc(sizeof(type))
 
 Node* parse_expr(Token** start, Token* end, int precedence);
 
@@ -288,6 +284,7 @@ Node* parse_monoop(Token** start, Token* end) {
     }
 
     Node* node;
+    Node* temp_node;
     Token* cur = *start;
     (*start)++;
 
@@ -303,6 +300,27 @@ Node* parse_monoop(Token** start, Token* end) {
         node->tag = Number;
         node->data.num = cur->value;
         
+        // implements implicit multiplication: 4x becomes 4*x
+        // possibly replace this with a peephole substitution to add the implicit multiply into the tokens
+        // TODO along with this replace some exponentiations with chained multiplications
+        if (*start != end) {
+            switch ((*start)->kind) {
+                case Num:
+                case LParen:
+                case Abs:
+                case VarX:
+                case VarY:
+                    temp_node = node;
+                    node = NEW(Node);
+                    node->tag = BinaryOp;
+                    node->data.b_op.op = Mul;
+                    node->data.b_op.n1 = temp_node;
+                    node->data.b_op.n2 = parse_expr(start, end, 2 - 1);
+                    break;
+                default:
+                    break;
+            }
+        }
         break;
     case LParen:
         node = parse_expr(start, end, 8);
@@ -325,9 +343,8 @@ Node* parse_monoop(Token** start, Token* end) {
         break;
     default:
         eat_shit_and_die("Unexpected character in mono op");
-        return 0;
     }
-
+    
     return node;
 }
 
@@ -385,28 +402,28 @@ void traverse_ast(Node* node) {
     }
 }
 
-#define EVAL_WIDTH 8
+#define LANE_WIDTH 8
 
 #define LANE_MAP(in1, in2, out, code) \
-    for (int i = 0; i < EVAL_WIDTH; i++) { \
+    for (int i = 0; i < LANE_WIDTH; i++) { \
         float a = in1[i]; \
         float b = in2[i]; \
         out[i] = code; \
     }
 
 #define LANE_MAP_SINGLE(in, out, code) \
-    for (int i = 0; i < EVAL_WIDTH; i++) { \
+    for (int i = 0; i < LANE_WIDTH; i++) { \
         float a = in[i]; \
         out[i] = code; \
     }
 
 #define LANE_MAP_NONE(out, code) \
-    for (int i = 0; i < EVAL_WIDTH; i++) { \
+    for (int i = 0; i < LANE_WIDTH; i++) { \
         out[i] = code; \
     }
 
-void array_eval(const Node* node, float x[EVAL_WIDTH], float y[EVAL_WIDTH], float out[EVAL_WIDTH]) {
-    _Alignas(32) float tmp[EVAL_WIDTH];
+void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], float out[LANE_WIDTH]) {
+    _Alignas(32) float tmp[LANE_WIDTH];
 
     switch (node->tag) {
     case Number:
@@ -424,7 +441,6 @@ void array_eval(const Node* node, float x[EVAL_WIDTH], float y[EVAL_WIDTH], floa
             break;
         default:
             eat_shit_and_die("Unhandled monoop evaluation");
-            break;
         }
         break;
     case BinaryOp:
@@ -447,7 +463,6 @@ case op: \
             BINARY_OP_CASE (Equal, a == b)
             default:
                 eat_shit_and_die("Unhandled binop evaluation");
-                break;
         }
         break;
     case VariableX:
@@ -472,13 +487,16 @@ int main(int argc, char *argv[]) {
 
     Node* root;
     {
+        bool debug = getenv("PARSE_DEBUG") != 0;
         char* what = argv[1];
-        ArrayList tokens = lex(what);
-        Token* start = (Token*)tokens.allocation;
-        root = parse_expr(&start, (Token*)tokens.cursor, 8);
-
-        if (getenv("PARSE_DEBUG") != 0) {
+        
+        if (debug) {
             printf("%s\n", what);
+        }
+        
+        ArrayList tokens = lex(what);
+        
+        if (debug) {
             for (Token* tok = (Token*)tokens.allocation; tok != (Token*)tokens.cursor; tok++) {
                 if (tok->kind == Num) {
                     printf("%f ", tok->value);
@@ -487,6 +505,13 @@ int main(int argc, char *argv[]) {
                     printf("%s ", string);
                 }
             }
+            printf("\n");
+        }
+        
+        Token* start = (Token*)tokens.allocation;
+        root = parse_expr(&start, (Token*)tokens.cursor, 8);
+
+        if (debug) {
             printf("\n");
             traverse_ast(root);
             printf("\n");
@@ -535,11 +560,11 @@ int main(int argc, char *argv[]) {
             dirty = true;
             break;
         case 'w':
-            zoom += 0.1;
+            zoom *= 0.9;
             dirty = true;
             break;
         case 'z':
-            zoom -= 0.1;
+            zoom /= 0.9;
             dirty = true;
             break;
         case 'r':
@@ -555,15 +580,16 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        zoom = fmax(zoom, 0.1);
+        // cap the zoom so that it doesn't become negative
+        zoom = fmax(zoom, 0.0001);
 
         if (w != COLS || h != LINES) {
             dirty = true;
             w = COLS;
             h = LINES;
             
-            // round up to a multiple of EVAL_WIDTH
-            int size = ((w*h + EVAL_WIDTH - 1) / EVAL_WIDTH) * EVAL_WIDTH;
+            // round up to a multiple of LANE_WIDTH
+            int size = ((w*h + LANE_WIDTH - 1) / LANE_WIDTH) * LANE_WIDTH;
 
             if (buffer) {
                 free(buffer);
@@ -578,14 +604,16 @@ int main(int argc, char *argv[]) {
             // not needed since we overwrite everything anyway
             // clear();
 
-            _Alignas(32) float x_arr[EVAL_WIDTH];
-            _Alignas(32) float y_arr[EVAL_WIDTH];
+            _Alignas(32) float x_arr[LANE_WIDTH];
+            _Alignas(32) float y_arr[LANE_WIDTH];
+
+            // since terminal cells aren't square, we squish the y direction to roughly compensate
+            const float y_mul = 2.0;
 
             float* out = buffer;
-            const float y_mult = 2.0;
-            float xf0 = x_shift - (float)w*zoom*0.5;
+            float xf0 = x_shift - w*zoom*0.5;
             float xf;
-            float yf = y_shift + (float)h*zoom*0.5*y_mult;
+            float yf = y_shift + h*zoom*0.5*y_mul;
             float d = zoom;
 
             int i = 0;
@@ -597,13 +625,13 @@ int main(int argc, char *argv[]) {
                     xf += d;
                     i++;
 
-                    if (i == EVAL_WIDTH) {
+                    if (i == LANE_WIDTH) {
                         array_eval(root, x_arr, y_arr, out);
-                        out += EVAL_WIDTH;
+                        out += LANE_WIDTH;
                         i = 0;
                     }
                 }
-                yf -= d*y_mult;
+                yf -= d*y_mul;
             }
             // finish the rest, out was padded enough so that we don't overrun it
             if (i != 0) {
@@ -624,7 +652,7 @@ int main(int argc, char *argv[]) {
             refresh();
         }
 
-        // sleep ~16 ms to get 60 fps
+        // sleep ~16 ms to get 60 fps, this assumes frame drawing is instant
         usleep(16666);
     }
 

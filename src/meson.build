@@ -1,4 +1,4 @@
-plotter_sources = [
+sources = [
   'main.c',
 ]
 
@@ -6,10 +6,13 @@ cc = meson.get_compiler('c')
 
 deps = [
 	dependency('curses'),
-	cc.find_library('m', required : false)
+  # neccessary to use math.h
+	cc.find_library('m', required: true)
 ]
 
 executable('plotter',
-  sources: plotter_sources,
-  dependencies: deps
+  sources: sources,
+  dependencies: deps,
+  # we really don't care about precision, really just speeed because I have issues
+  c_args: ['-ffast-math']
 )
