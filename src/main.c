@@ -335,7 +335,7 @@ Node* parse_expr(Token** start, Token* end, int precedence) {
         Token* op = *start;
         int prec = operator_precedence(op);
 
-        if ((prec != -1) && prec < precedence) {
+        if ((prec != -1) && (prec <= precedence)) {
             (*start)++;
             Node* node = NEW(Node);
             node->tag = BinaryOp;
@@ -379,6 +379,11 @@ void traverse_ast(Node* node) {
     default:
         eat_shit_and_die("I've left a node type unhandled");
     }
+}
+
+#define EVAL_WIDTH 8
+void array_eval(float x[static EVAL_WIDTH], float y[static EVAL_WIDTH], float out[static EVAL_WIDTH]) {
+
 }
 
 int main(int argc, char *argv[]) {
