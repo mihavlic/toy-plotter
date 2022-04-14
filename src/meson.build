@@ -2,10 +2,14 @@ plotter_sources = [
   'main.c',
 ]
 
-plotter_deps = [
+cc = meson.get_compiler('c')
+
+deps = [
+	dependency('curses'),
+	cc.find_library('m', required : false)
 ]
 
-executable('plotter', plotter_sources,
-  dependencies: plotter_deps,
-  install: true,
+executable('plotter',
+  sources: plotter_sources,
+  dependencies: deps
 )

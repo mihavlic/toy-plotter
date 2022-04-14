@@ -1,6 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+#include <unistd.h>
+
+#include<ncurses.h>
 
 void eat_shit_and_die(char* err) {
     fputs(err, stderr);
@@ -51,7 +55,7 @@ typedef enum {
 typedef struct NodeStruct {
     NodeTag tag;
     union {
-        double num;
+        float num;
         BinOp b_op;
         MonOp m_op;
     } data;
@@ -251,7 +255,7 @@ int operator_precedence(Token* token) {
     switch (token->kind) {
     case Sub:
     case Add:
-        return 4;
+        return 3;
     case Mul:
         return 2;
     case Exp:
@@ -260,7 +264,6 @@ int operator_precedence(Token* token) {
     case Lower:
     case GreaterEqual:
     case LowerEqual:
-        return 3;
     case Equal:
         return 5;
     default:
@@ -299,6 +302,7 @@ Node* parse_monoop(Token** start, Token* end) {
         node = NEW(Node);
         node->tag = Number;
         node->data.num = cur->value;
+        
         break;
     case LParen:
         node = parse_expr(start, end, 8);
@@ -361,14 +365,14 @@ void traverse_ast(Node* node) {
     case MonoOp:
         printf("(%s ", token_name(node->data.m_op.op));
         traverse_ast(node->data.m_op.n);
-        printf(") ");
+        printf(")");
         break;
     case BinaryOp:
         printf("(%s ", token_name(node->data.b_op.op));
         traverse_ast(node->data.b_op.n1);
         printf(", ");
         traverse_ast(node->data.b_op.n2);
-        printf(") ");
+        printf(")");
         break;
     case VariableX:
         printf("X");
@@ -382,33 +386,247 @@ void traverse_ast(Node* node) {
 }
 
 #define EVAL_WIDTH 8
-void array_eval(float x[static EVAL_WIDTH], float y[static EVAL_WIDTH], float out[static EVAL_WIDTH]) {
 
+#define LANE_MAP(in1, in2, out, code) \
+    for (int i = 0; i < EVAL_WIDTH; i++) { \
+        float a = in1[i]; \
+        float b = in2[i]; \
+        out[i] = code; \
+    }
+
+#define LANE_MAP_SINGLE(in, out, code) \
+    for (int i = 0; i < EVAL_WIDTH; i++) { \
+        float a = in[i]; \
+        out[i] = code; \
+    }
+
+#define LANE_MAP_NONE(out, code) \
+    for (int i = 0; i < EVAL_WIDTH; i++) { \
+        out[i] = code; \
+    }
+
+void array_eval(const Node* node, float x[EVAL_WIDTH], float y[EVAL_WIDTH], float out[EVAL_WIDTH]) {
+    _Alignas(32) float tmp[EVAL_WIDTH];
+
+    switch (node->tag) {
+    case Number:
+        LANE_MAP_NONE(out, node->data.num);
+        break;
+    case MonoOp:
+        array_eval(node->data.m_op.n, x, y, out);
+
+        switch(node->data.m_op.op) {
+        case Sub:
+            LANE_MAP_SINGLE(out, out, -a);
+            break;
+        case Abs:
+            LANE_MAP_SINGLE(out, out, fabsf(a));
+            break;
+        default:
+            eat_shit_and_die("Unhandled monoop evaluation");
+            break;
+        }
+        break;
+    case BinaryOp:
+#define BINARY_OP_CASE(op, code) \
+case op: \
+    LANE_MAP(out, tmp, out, code); \
+    break;
+        array_eval(node->data.b_op.n1, x, y, out);
+        array_eval(node->data.b_op.n2, x, y, tmp);
+
+        switch (node->data.b_op.op) {
+            BINARY_OP_CASE (Sub, a-b)
+            BINARY_OP_CASE (Add, a+b)
+            BINARY_OP_CASE (Mul, a*b)
+            BINARY_OP_CASE (Exp, powf(a,b))
+            BINARY_OP_CASE (Greater, a > b)
+            BINARY_OP_CASE (Lower, a < b)
+            BINARY_OP_CASE (GreaterEqual, a >= b)
+            BINARY_OP_CASE (LowerEqual, a <= b)
+            BINARY_OP_CASE (Equal, a == b)
+            default:
+                eat_shit_and_die("Unhandled binop evaluation");
+                break;
+        }
+        break;
+    case VariableX:
+        // copy x array to out
+        LANE_MAP_SINGLE(x, out, a)
+        break;
+    case VariableY:
+        // copy y array to out
+        LANE_MAP_SINGLE(y, out, a)
+        break;
+    default:
+        eat_shit_and_die("I've left a node type unhandled");
+    }
 }
 
+
 int main(int argc, char *argv[]) {
-    if (argc > 1) {
+
+    if (argc < 2) {
+        eat_shit_and_die ("No equation provided");
+    }
+
+    Node* root;
+    {
         char* what = argv[1];
-        printf("%s\n", what);
-
         ArrayList tokens = lex(what);
-
-        for (Token* tok = (Token*)tokens.allocation; tok != (Token*)tokens.cursor; tok++) {
-            if (tok->kind == Num) {
-                printf("%f ", tok->value);
-            } else {
-                char* string = token_name(tok->kind);
-                printf("%s ", string);
-            }
-        }
-        printf("\n");
-
         Token* start = (Token*)tokens.allocation;
-        Node* root = parse_expr(&start, (Token*)tokens.cursor, 8);
-        traverse_ast(root);
+        root = parse_expr(&start, (Token*)tokens.cursor, 8);
+
+        if (getenv("PARSE_DEBUG") != 0) {
+            printf("%s\n", what);
+            for (Token* tok = (Token*)tokens.allocation; tok != (Token*)tokens.cursor; tok++) {
+                if (tok->kind == Num) {
+                    printf("%f ", tok->value);
+                } else {
+                    char* string = token_name(tok->kind);
+                    printf("%s ", string);
+                }
+            }
+            printf("\n");
+            traverse_ast(root);
+            printf("\n");
+        }
 
         list_free(&tokens);
-
-        printf("\n");
     }
+
+    initscr();
+    noecho(); // dont print typed chars
+    cbreak(); // dont handle clear shortcuts and buffering
+    keypad(stdscr, TRUE); // handle arrow keys properly
+    nodelay(stdscr, TRUE); // don't block on wgetch
+    curs_set(0); // hide cursor
+    use_tioctl(true); // get the correct terminal size
+
+    // how many value units a single character is
+    float zoom = 1.0;
+    float x_shift = 0.0;
+    float y_shift = 0.0;
+
+    int w = 0;
+    int h = 0;
+    float* buffer = 0;
+    chtype* ch_buffer = 0;
+
+    bool dirty = false;
+
+    while (1) {
+        int ch = wgetch(stdscr);
+        switch (ch) {
+        case KEY_UP:
+            y_shift += 1.0*zoom;
+            dirty = true;
+            break;
+        case KEY_DOWN:
+            y_shift -= 1.0*zoom;
+            dirty = true;
+            break;
+        case KEY_RIGHT:
+            x_shift += 1.0*zoom;
+            dirty = true;
+            break;
+        case KEY_LEFT:
+            x_shift -= 1.0*zoom;
+            dirty = true;
+            break;
+        case 'w':
+            zoom += 0.1;
+            dirty = true;
+            break;
+        case 'z':
+            zoom -= 0.1;
+            dirty = true;
+            break;
+        case 'r':
+            zoom = 1.0;
+            x_shift = 0.0;
+            y_shift = 0.0;
+            dirty = true;
+            break;
+        case 'q':
+            endwin();
+            return 0;
+        default:
+            break;
+        }
+
+        zoom = fmax(zoom, 0.1);
+
+        if (w != COLS || h != LINES) {
+            dirty = true;
+            w = COLS;
+            h = LINES;
+            
+            // round up to a multiple of EVAL_WIDTH
+            int size = ((w*h + EVAL_WIDTH - 1) / EVAL_WIDTH) * EVAL_WIDTH;
+
+            if (buffer) {
+                free(buffer);
+                free(ch_buffer);
+            }
+
+            buffer = aligned_alloc(32, size*sizeof(float));
+            ch_buffer = malloc(size*sizeof(chtype));
+        }
+
+        if (dirty && w != 0 && h != 0) {
+            // not needed since we overwrite everything anyway
+            // clear();
+
+            _Alignas(32) float x_arr[EVAL_WIDTH];
+            _Alignas(32) float y_arr[EVAL_WIDTH];
+
+            float* out = buffer;
+            const float y_mult = 2.0;
+            float xf0 = x_shift - (float)w*zoom*0.5;
+            float xf;
+            float yf = y_shift + (float)h*zoom*0.5*y_mult;
+            float d = zoom;
+
+            int i = 0;
+            for (int y = 0; y < h; y++) {
+                xf = xf0;
+                for (int x = 0; x < w; x++) {
+                    x_arr[i] = xf;
+                    y_arr[i] = yf;
+                    xf += d;
+                    i++;
+
+                    if (i == EVAL_WIDTH) {
+                        array_eval(root, x_arr, y_arr, out);
+                        out += EVAL_WIDTH;
+                        i = 0;
+                    }
+                }
+                yf -= d*y_mult;
+            }
+            // finish the rest, out was padded enough so that we don't overrun it
+            if (i != 0) {
+                array_eval(root, x_arr, y_arr, out);
+            }
+
+            for (int j = 0; j < w*h; j++) {
+                ch_buffer[j] = buffer[j] > 0.0 ? 'X' : ' ';
+            }
+
+            chtype* ch_out = ch_buffer;
+            for (int k = 0; k < h; k++) {
+                mvaddchnstr(k, 0, ch_out, w);
+                ch_out += w;
+            }
+
+            dirty = false;
+            refresh();
+        }
+
+        // sleep ~16 ms to get 60 fps
+        usleep(16666);
+    }
+
+    return 0;
 }
