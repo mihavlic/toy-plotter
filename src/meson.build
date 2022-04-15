@@ -14,5 +14,7 @@ executable('plotter',
   sources: sources,
   dependencies: deps,
   # we really don't care about precision, really just speeed because I have issues
-  c_args: ['-ffast-math']
+  # enable avx2 vectorization
+  # O3 max optimization 
+  c_args: ['-ffast-math', '-mavx2', '-O3']
 )

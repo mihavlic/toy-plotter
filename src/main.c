@@ -16,6 +16,7 @@ typedef enum {
     Sub,
     Add,
     Mul,
+    Div,
     Abs,
     Exp,
     Num,
@@ -130,7 +131,7 @@ void push_token(ArrayList* list, Token* token) {
     list->cursor += sizeof(Token);
 }
 
-ArrayList lex(char* src) {
+void lex(char* src, ArrayList* tokens) {
 #define OPERATOR_CASE(what, tokenKind) \
 case what: \
     tok.kind = tokenKind; \
@@ -148,15 +149,14 @@ case what: \
     } \
     break;
 
-    ArrayList tokens = {};
-
     // early exit if string is empty
     if (*src == '\0') {
-        // tokens is nulled which is interpreted as being empty
-        return tokens;
+        // tokens is nulled so that free is not called on uninit memory
+        memset(tokens, 0, sizeof(ArrayList));
+        return;
     }
 
-    list_init(&tokens, 32*sizeof(Token));
+    list_init(tokens, 32*sizeof(Token));
 
     char* start = 0;
 
@@ -167,6 +167,7 @@ case what: \
     char cur = ' ';
     char nxt = *src;
 
+    // TODO clean this up, probably steal the tokenizer design from zig
     while (1) {
         Token tok = {};
 
@@ -195,6 +196,7 @@ case what: \
             OPERATOR_CASE('-', Sub)
             OPERATOR_CASE('+', Add)
             OPERATOR_CASE('*', Mul)
+            OPERATOR_CASE('/', Div)
             OPERATOR_CASE('|', Abs)
             OPERATOR_CASE('^', Exp)
             OPERATOR_CASE('=', Equal)
@@ -209,17 +211,15 @@ case what: \
         }
 
         finish_token:
-        push_token(&tokens, &tok);
+        push_token(tokens, &tok);
 
         next_char:
         // end of string
-        if (nxt == 0) break;
+        if (nxt == '\0') break;
 
         cur = nxt;
         nxt = *++c;
     }
-
-    return tokens;
 }
 
 char* token_name(TokenKind tok) {
@@ -231,6 +231,7 @@ case what: \
         FORMAT_CASE(Sub)
         FORMAT_CASE(Add)
         FORMAT_CASE(Mul)
+        FORMAT_CASE(Div)
         FORMAT_CASE(Abs)
         FORMAT_CASE(Exp)
         FORMAT_CASE(Num)
@@ -252,6 +253,8 @@ int operator_precedence(Token* token) {
     switch (token->kind) {
     case Sub:
     case Add:
+        return 4;
+    case Div:
         return 3;
     case Mul:
         return 2;
@@ -403,6 +406,7 @@ void traverse_ast(Node* node) {
 }
 
 #define LANE_WIDTH 8
+#define LANE_ALIGN 16
 
 #define LANE_MAP(in1, in2, out, code) \
     for (int i = 0; i < LANE_WIDTH; i++) { \
@@ -423,7 +427,7 @@ void traverse_ast(Node* node) {
     }
 
 void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], float out[LANE_WIDTH]) {
-    _Alignas(32) float tmp[LANE_WIDTH];
+    _Alignas(LANE_ALIGN) float tmp[LANE_WIDTH];
 
     switch (node->tag) {
     case Number:
@@ -455,6 +459,7 @@ case op: \
             BINARY_OP_CASE (Sub, a-b)
             BINARY_OP_CASE (Add, a+b)
             BINARY_OP_CASE (Mul, a*b)
+            BINARY_OP_CASE (Div, a/b)
             BINARY_OP_CASE (Exp, powf(a,b))
             BINARY_OP_CASE (Greater, a > b)
             BINARY_OP_CASE (Lower, a < b)
@@ -494,8 +499,13 @@ int main(int argc, char *argv[]) {
             printf("%s\n", what);
         }
         
-        ArrayList tokens = lex(what);
+        ArrayList tokens;
+        lex(what, &tokens);
         
+        if (tokens.allocation == NULL) {
+            eat_shit_and_die("No tokens lexed");
+        }
+
         if (debug) {
             for (Token* tok = (Token*)tokens.allocation; tok != (Token*)tokens.cursor; tok++) {
                 if (tok->kind == Num) {
@@ -596,7 +606,7 @@ int main(int argc, char *argv[]) {
                 free(ch_buffer);
             }
 
-            buffer = aligned_alloc(32, size*sizeof(float));
+            buffer = aligned_alloc(LANE_ALIGN, size*sizeof(float));
             ch_buffer = malloc(size*sizeof(chtype));
         }
 
@@ -604,8 +614,8 @@ int main(int argc, char *argv[]) {
             // not needed since we overwrite everything anyway
             // clear();
 
-            _Alignas(32) float x_arr[LANE_WIDTH];
-            _Alignas(32) float y_arr[LANE_WIDTH];
+            _Alignas(LANE_ALIGN) float x_arr[LANE_WIDTH];
+            _Alignas(LANE_ALIGN) float y_arr[LANE_WIDTH];
 
             // since terminal cells aren't square, we squish the y direction to roughly compensate
             const float y_mul = 2.0;
