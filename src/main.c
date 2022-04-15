@@ -33,6 +33,10 @@ typedef enum {
     Log2,
     Ln,
     Sqrt,
+    Sin,
+    Cos,
+    Tan,
+    CoTan,
     // constants
     X,
     Y,
@@ -55,6 +59,12 @@ struct BuiltinMapping {
     {"y", Y},
     {"e", E},
     {"pi", Pi},
+    {"sin", Sin},
+    {"cos", Cos},
+    {"tan", Tan},
+    {"tg", Tan},
+    {"cotan", CoTan},
+    {"cotg", CoTan},
     {NULL, 0},
 };
 
@@ -416,6 +426,10 @@ case what: \
         FORMAT_CASE(E)
         FORMAT_CASE(Pi)
         FORMAT_CASE(Ident)
+        FORMAT_CASE(Sin)
+        FORMAT_CASE(Cos)
+        FORMAT_CASE(Tan)
+        FORMAT_CASE(CoTan)
         default:
             eat_shit_and_die("Unhandled operator");
     }
@@ -488,6 +502,10 @@ Node* parse_monoop(Token** start, Token* end) {
                 case Log2:
                 case Ln:
                 case Sqrt:
+                case Sin:
+                case Cos:
+                case Tan:
+                case CoTan:
                 case X:
                 case Y:
                 case E:
@@ -519,6 +537,10 @@ Node* parse_monoop(Token** start, Token* end) {
     case Log2:
     case Ln:
     case Sqrt:
+    case Sin:
+    case Cos:
+    case Tan:
+    case CoTan:
         node = NEW(Node);
         node->tag = BuiltinFunction;
         node->data.function.kind = cur->kind;
@@ -685,6 +707,10 @@ void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], floa
             MONO_OP_CASE(Log2, log2f(a))
             MONO_OP_CASE(Ln, logf(a))
             MONO_OP_CASE(Sqrt, sqrtf(a))
+            MONO_OP_CASE(Sin, sinf(a))
+            MONO_OP_CASE(Cos, cosf(a))
+            MONO_OP_CASE(Tan, tanf(a))
+            MONO_OP_CASE(CoTan, cosf(a)/sinf(a))
             default:
                 eat_shit_and_die("Unhandled builtin function");
         }
