@@ -5,9 +5,9 @@ sources = [
 cc = meson.get_compiler('c')
 
 deps = [
-	dependency('curses'),
+  dependency('curses'),
   # neccessary to use math.h
-	cc.find_library('m', required: true)
+  cc.find_library('m', required: true),
 ]
 
 executable('plotter',
@@ -18,5 +18,4 @@ executable('plotter',
   # O3 max optimization 
   c_args: ['-O3', '-ffast-math', '-march=core-avx2']
   # c_args: ['-g']
-
 )

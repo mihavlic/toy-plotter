@@ -96,7 +96,7 @@ typedef enum {
 } NodeKind;
 
 typedef struct NodeStruct {
-    NodeKind tag;
+    NodeKind kind;
     union {
         float num;
         BinOpNode b_op;
@@ -481,13 +481,13 @@ Node* parse_monoop(Token** start, Token* end) {
     switch (cur->kind) {
     case Sub:
         node = NEW(Node);
-        node->tag = MonoOp;
+        node->kind = MonoOp;
         node->data.m_op.op = Sub;
         node->data.m_op.n = parse_monoop(start, end);
         break;
     case Num:
         node = NEW(Node);
-        node->tag = Number;
+        node->kind = Number;
         node->data.num = cur->data.number;
         
         // implements implicit multiplication: 4x becomes 4*x
@@ -512,7 +512,7 @@ Node* parse_monoop(Token** start, Token* end) {
                 case Pi:
                     temp_node = node;
                     node = NEW(Node);
-                    node->tag = BinaryOp;
+                    node->kind = BinaryOp;
                     node->data.b_op.op = Mul;
                     node->data.b_op.n1 = temp_node;
                     node->data.b_op.n2 = parse_expr(start, end, 2 - 1);
@@ -528,7 +528,7 @@ Node* parse_monoop(Token** start, Token* end) {
         break;
     case Abs:
         node = NEW(Node);
-        node->tag = MonoOp;
+        node->kind = MonoOp;
         node->data.m_op.op = Abs;
         node->data.m_op.n = parse_expr(start, end, 8);
         ensure_token(start, end, Abs);
@@ -542,7 +542,7 @@ Node* parse_monoop(Token** start, Token* end) {
     case Tan:
     case CoTan:
         node = NEW(Node);
-        node->tag = BuiltinFunction;
+        node->kind = BuiltinFunction;
         node->data.function.kind = cur->kind;
         // only multiplication and exponentiation are more associative that function call
         // parentheses are not required
@@ -553,7 +553,7 @@ Node* parse_monoop(Token** start, Token* end) {
     case E:
     case Pi:
         node = NEW(Node);
-        node->tag = BuiltinConstant;
+        node->kind = BuiltinConstant;
         node->data.constant = cur->kind;
         break;
     case Ident:
@@ -566,7 +566,6 @@ Node* parse_monoop(Token** start, Token* end) {
 }
 
 Node* parse_expr(Token** start, Token* end, int precedence) {
-
     Node* lhs = parse_monoop(start, end);
 
     while (*start != end) {
@@ -576,7 +575,7 @@ Node* parse_expr(Token** start, Token* end, int precedence) {
         if ((prec != -1) && (prec <= precedence)) {
             (*start)++;
             Node* node = NEW(Node);
-            node->tag = BinaryOp;
+            node->kind = BinaryOp;
             node->data.b_op.op = op->kind;
             node->data.b_op.n1 = lhs;
             node->data.b_op.n2 = parse_expr(start, end, prec - 1);
@@ -592,7 +591,7 @@ Node* parse_expr(Token** start, Token* end, int precedence) {
 }
 
 void traverse_ast(Node* node) {
-    switch (node->tag) {
+    switch (node->kind) {
     case Number:
         printf("(%f)", node->data.num);
         break;
@@ -622,6 +621,28 @@ void traverse_ast(Node* node) {
     default:
         eat_shit_and_die("I've left a node type unhandled");
     }
+}
+
+void free_ast(Node* node) {
+    switch (node->kind) {
+    case MonoOp:
+        free_ast(node->data.m_op.n);
+        break;
+    case BinaryOp:
+        free_ast(node->data.b_op.n1);
+        free_ast(node->data.b_op.n2);
+        break;
+    case BuiltinFunction:
+        free_ast(node->data.function.n);
+        break;
+    case Number:
+    case BuiltinConstant:
+    case Identifier:
+        break;
+    default:
+        eat_shit_and_die("I've left a node type unhandled");
+    }
+    free(node);
 }
 
 #define LANE_WIDTH 8
@@ -665,7 +686,7 @@ case op: \
 void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], float out[LANE_WIDTH]) {
     _Alignas(LANE_ALIGN) float tmp[LANE_WIDTH];
 
-    switch (node->tag) {
+    switch (node->kind) {
     case Number:
         LANE_MAP_NONE(out, node->data.num);
         break;
@@ -744,6 +765,7 @@ int main(int argc, char *argv[]) {
     }
 
     Node* root;
+    ArrayList tokens;
     {
         bool debug = getenv("PARSE_DEBUG") != NULL;
         const char* what = argv[1];
@@ -752,7 +774,6 @@ int main(int argc, char *argv[]) {
             printf("%s\n", what);
         }
         
-        ArrayList tokens;
         list_init(&tokens, 32*sizeof(Token));
 
         char buf[32];
@@ -795,8 +816,32 @@ int main(int argc, char *argv[]) {
             traverse_ast(root);
             printf("\n");
         }
+    }
 
-        list_free(&tokens);
+    bool saw_x, saw_y = false;
+    for (Token* tok = (Token*)tokens.allocation; tok != (Token*)tokens.cursor; tok++) {
+        if (tok->kind == X) {
+            saw_x = true;
+        } else if (tok->kind == Y) {
+            saw_y = true;
+        }
+    }
+
+    // the expression only has one x as a variable
+    // this is likely user error, replace with an equation with y, this is what desmos does
+    // TODO reconsider this, or do this with y as well
+    if (saw_x && !saw_y) {
+        Node* y_node = NEW(Node);
+        y_node->kind = BuiltinConstant;
+        y_node->data.constant = Y;
+
+        Node* new = NEW(Node);
+        new->kind = BinaryOp;
+        new->data.b_op.op = Eq;
+        new->data.b_op.n1 = y_node;
+        new->data.b_op.n2 = root;
+
+        root = new;
     }
 
     // -1 disabled, 0 unconfigured, 1 enabled
@@ -811,7 +856,7 @@ int main(int argc, char *argv[]) {
 
     // heuristic, we probably want this for equation as it gives much better quality
     // transform equation into a subtraction so that we don't lose the gradient of the function
-    if (outline != -1 && root->tag == BinaryOp && root->data.b_op.op == Eq) {
+    if (outline != -1 && root->kind == BinaryOp && root->data.b_op.op == Eq) {
         outline = 1;
         root->data.b_op.op = Sub;
     }
@@ -874,8 +919,7 @@ int main(int argc, char *argv[]) {
             dirty = true;
             break;
         case 'q':
-            endwin();
-            return 0;
+            goto end;
         default:
             break;
         }
@@ -986,5 +1030,9 @@ if (((x >= 0) && (x < w_) && (y >= 0) && (y < h_))) { \
         usleep(16666);
     }
 
+    end:
+    endwin();
+    list_free(&tokens);
+    free_ast(root);
     return 0;
 }
