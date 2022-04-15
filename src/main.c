@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define _USE_MATH_DEFINES // to get math constants
 #include <math.h>
 #include <unistd.h>
 
@@ -25,11 +26,37 @@ typedef enum {
     GreaterEqual,
     LowerEqual,
     Equal,
-    VarX,
-    VarY,
     LParen,
     RParen,
+    // functions
+    Log,
+    Log2,
+    Ln,
+    Sqrt,
+    // constants
+    X,
+    Y,
+    E,
+    Pi,
+    // identifier
+    Ident,
 } TokenKind;
+
+// I see why tuples are useful
+struct BuiltinMapping {
+    const char* name;
+    TokenKind builtin;
+} builtins[] = {
+    {"log", Log},
+    {"log2", Log2},
+    {"ln", Ln},
+    {"sqrt", Sqrt},
+    {"x", X},
+    {"y", Y},
+    {"e", E},
+    {"pi", Pi},
+    {NULL, 0},
+};
 
 struct NodeStruct;
 
@@ -37,34 +64,45 @@ typedef struct {
     struct NodeStruct* n1;
     struct NodeStruct* n2;
     TokenKind op;
-} BinOp;
+} BinOpNode;
 
 typedef struct {
     struct NodeStruct* n;
     TokenKind op;
-} MonOp;
+} MonoOpNode;
+
+typedef struct {
+    struct NodeStruct* n;
+    TokenKind kind;
+} FunctionNode;
 
 typedef enum {
     Number,
     BinaryOp,
     MonoOp,
-    // TODO handle general variables (user-defined, PI, etc)
-    VariableX,
-    VariableY,
-} NodeTag;
+    BuiltinFunction,
+    BuiltinConstant,
+    Identifier,
+} NodeKind;
 
 typedef struct NodeStruct {
-    NodeTag tag;
+    NodeKind tag;
     union {
         float num;
-        BinOp b_op;
-        MonOp m_op;
+        BinOpNode b_op;
+        MonoOpNode m_op;
+        FunctionNode function;
+        TokenKind constant;
+        char* identifier;
     } data;
 } Node;
 
 typedef struct {
     TokenKind kind;
-    double value;
+    union {
+        float number;
+        char* identifier;
+    } data;
 } Token;
 
 typedef struct {
@@ -131,94 +169,220 @@ void push_token(ArrayList* list, Token* token) {
     list->cursor += sizeof(Token);
 }
 
-void lex(char* src, ArrayList* tokens) {
-#define OPERATOR_CASE(what, tokenKind) \
-case what: \
-    tok.kind = tokenKind; \
+typedef struct {
+    enum {
+        LStart,
+        LNumberIdent,
+        LNumber,
+        LIdent,
+        LGreater,
+        LLower,
+    } state;
+    char* ident_buf;
+    char* ident_buf_cursor;
+    char* ident_buf_end;
+} LexerState;
+
+#define LEXER_SINGLE_CHAR_TOKEN(char, token) \
+case char: \
+    tok.kind = token; \
     break;
 
-#define OPERATOR_CASE_DOUBLE(what, what2, tokenKind_single, tokenKind_double) \
-case what: \
-    if (nxt == what2) { \
-        tok.kind = tokenKind_double; \
-        if (nxt == 0) break; \
-        cur = nxt; \
-        nxt = *++c; \
-    } else { \
-        tok.kind = tokenKind_single; \
-    } \
-    break;
+// this comment is here for historic purposes
+/* // ends upon reaching 'end' or encountering a '\0', if string is null terminated, end is not required to meaningful
+// the parser can be buffered as it preserves state between invocation, but a number or an identifier cannot span
+// two invocation as currently the lexer uses direct pointer indices that are not valid between allocations
+//      FIXME either copy characters into a separate buffer or take into account buffering and try to stitch together two identifiers after they are tokenized
+//      probably gonna take option 1 as we already need to copy out identifiers */
+void lex(const char** next, const char* end, ArrayList* tokens, LexerState* state, bool flush) {
+    const char* start = *next;
+    Token tok;
 
-    // early exit if string is empty
-    if (*src == '\0') {
-        // tokens is nulled so that free is not called on uninit memory
-        memset(tokens, 0, sizeof(ArrayList));
-        return;
-    }
-
-    list_init(tokens, 32*sizeof(Token));
-
-    char* start = 0;
-
-    // the cur,next pair starts with cur being a space so that the numeric lexing part can
-    // operate on the next variable including the first character, this way there is only one part that
-    // pushes the token
-    char* c = src;
-    char cur = ' ';
-    char nxt = *src;
-
-    // TODO clean this up, probably steal the tokenizer design from zig
     while (1) {
-        Token tok = {};
-
-        int is_numeric = ('0' <= nxt && nxt <= '9') || nxt == '.';
-        if (is_numeric) {
-            if (start == 0) {
-                start = c;
-            }
-        } else if (start != 0) {
-            // strtod modifies the end pointer, I don't think I want that?
-            char* end = c + 1;
-            double val = strtod(start, &end);
-
-            tok.kind = Num;
-            tok.value = val;
-
-            start = 0;
-            goto finish_token;
+        char cur = '\0';
+        // be careful not to dereference src if it's at the end, output null if it is
+        if (*next != end && **next != '\0') {
+            cur = **next;
+            *next += 1;
         }
 
-        switch (cur) {
-            case ' ':
-            case '\n':
-            case '\t':
-                goto next_char;
-            OPERATOR_CASE('-', Sub)
-            OPERATOR_CASE('+', Add)
-            OPERATOR_CASE('*', Mul)
-            OPERATOR_CASE('/', Div)
-            OPERATOR_CASE('|', Abs)
-            OPERATOR_CASE('^', Exp)
-            OPERATOR_CASE('=', Equal)
-            OPERATOR_CASE('x', VarX)
-            OPERATOR_CASE('y', VarY)
-            OPERATOR_CASE('(', LParen)
-            OPERATOR_CASE(')', RParen)
-            OPERATOR_CASE_DOUBLE('>', '=', Greater, GreaterEqual)
-            OPERATOR_CASE_DOUBLE('<', '=', Lower, LowerEqual)
+        switch (state->state) {
+            case LStart:
+                switch (cur) {
+                case ' ':
+                case '\n':
+                case '\t':
+                    start = *next;
+                    goto skip_token;
+                LEXER_SINGLE_CHAR_TOKEN('-', Sub)
+                LEXER_SINGLE_CHAR_TOKEN('+', Add)
+                LEXER_SINGLE_CHAR_TOKEN('*', Mul)
+                LEXER_SINGLE_CHAR_TOKEN('/', Div)
+                LEXER_SINGLE_CHAR_TOKEN('|', Abs)
+                LEXER_SINGLE_CHAR_TOKEN('^', Exp)
+                LEXER_SINGLE_CHAR_TOKEN('=', Equal)
+                LEXER_SINGLE_CHAR_TOKEN('(', LParen)
+                LEXER_SINGLE_CHAR_TOKEN(')', RParen)
+                case '<':
+                    state->state = LLower;
+                    goto skip_token;
+                case '>':
+                    state->state = LGreater;
+                    goto skip_token;
+                case '\0':
+                    return;
+                default:
+                    // a..z A..Z
+                    if ((cur >= 'a' && cur <= 'z') || (cur >= 'Z' && cur <= 'Z')) {
+                        state->state = LIdent;
+                        goto skip_token;
+                    // 0..9 .
+                    } else if ((cur >= '0' && cur <= '9') || cur == '.') {
+                        state->state = LNumber;
+                        goto skip_token;
+                    } else {
+                        eat_shit_and_die("Invalid character in lexer");
+                    }
+                }
+                break;
+            case LNumber:
+                if (!((cur >= '0' && cur <= '9') || cur == '.')) {
+                    if (*next - start > state->ident_buf_end - state->ident_buf_cursor) {
+                        eat_shit_and_die("Number is too long");
+                    }
+                    
+                    // since we have already moved src* to another character after the current one, we need revert
+                    if (cur != '\0') {
+                        (*next)--;
+                    }
+
+                    while (start != *next) {
+                        *state->ident_buf_cursor++ = *start++;
+                    }
+                    // if the next character is null, the string will possibly be split between
+                    // two invocations, in that case just return, in the next invocation
+                    // we again check that the next character is a string and if it is we continue,
+                    // eventually encountering a non-string character, then we make this check again
+                    // and either delay the parsing again (if at null) or finalize the string
+                    // at the end of parsing, the lexer is invoked one last time with null
+                    // to flush any string left unparsed
+                    if (cur == '\0' && !flush) {
+                        return;
+                    }
+                    
+                    // ^ this above is boilerplate for multi-char tokens :(
+
+                    float number = strtof(state->ident_buf, &state->ident_buf_cursor);
+
+                    // reset ident_buf_cursor since it's not needed anymore 
+                    state->ident_buf_cursor = state->ident_buf;
+                    
+                    tok.kind = Num;
+                    tok.data.number = number;
+                    break;
+                } else {
+                    goto skip_token;
+                }
+            case LIdent:
+                if (!((cur >= 'a' && cur <= 'z') || (cur >= 'Z' && cur <= 'Z'))) {
+                    if (*next - start > state->ident_buf_end - state->ident_buf_cursor) {
+                        eat_shit_and_die("Ident is too long");
+                    }
+                    
+                    // since we have already moved src* to another character after the current one, we need revert
+                    if (cur != '\0') {
+                        (*next)--;
+                    }
+
+                    while (start != *next) {
+                        *state->ident_buf_cursor++ = *start++;
+                    }
+
+                    if (cur == '\0' && !flush) {
+                        return;
+                    }
+                    
+                    int len = state->ident_buf_cursor - state->ident_buf;
+                    // reset ident_buf_cursor since it's not needed anymore 
+                    state->ident_buf_cursor = state->ident_buf;
+
+                    int found = -1;
+                    // iterate through the array of builtin strings
+                    for (int i = 0; builtins[i].name != NULL; i++) {
+                        // iterate through the characters
+                        for (int j = 0; ; j++) {
+                            // since the characters in the state->ident_buf are not null terminated
+                            // we just check that at the moment that the builtin string ends, the index of the null
+                            // char is the same as the len (index + one for the null byte == len)
+                            if (builtins[i].name[j] == '\0' && j == len) {
+                                if (j == len) {
+                                    found = i;
+                                    goto found;
+                                }
+                                break;
+                            }
+                            // check that the characters are the same for both
+                            // the moment they're not, bail
+                            if (builtins[i].name[j] != state->ident_buf[j]) {
+                                break;
+                            }
+                        }
+                    }
+
+                    found:
+                    if (found != -1) {
+                        tok.kind = builtins[found].builtin;
+                        break;
+                    }
+                    
+                    // TODO replace with a smarter allocation scheme
+                    // copy to a null terminated string
+                    char* string = malloc(len+1);
+                    memcpy(string, state->ident_buf, len);
+                    string[len] = '\0';
+
+                    tok.kind = Ident;
+                    tok.data.identifier = string;
+                } else {
+                    goto skip_token; 
+                }
+            case LGreater:
+                if (cur == '=') {
+                    tok.kind = GreaterEqual;
+                // posibly split across invocations
+                } else if (cur == '\0') {
+                    return;
+                } else {
+                    tok.kind = Greater;
+                    // need to roll back the char because we just encountered it but it wasn't a part of >=
+                    *next -= 1;
+                }
+                break;
+            case LLower:
+                if (cur == '=') {
+                    tok.kind = LowerEqual;
+                // posibly split across invocations
+                } else if (cur == '\0') {
+                    return;
+                } else {
+                    tok.kind = Lower;
+                    // need to roll back the char because we just encountered it but it wasn't a part of <=
+                    *next -= 1;
+                }
+                break;
             default:
-                eat_shit_and_die("Unknown char");
+                eat_shit_and_die("Unhandled lexer state");
         }
 
-        finish_token:
-        push_token(tokens, &tok);
+        list_reserve(tokens, sizeof(Token));
+        *(Token*)tokens->cursor = tok;
+        tokens->cursor += sizeof(Token);
 
-        next_char:
-        // end of string
-        if (nxt == '\0') break;
+        state->state = LStart;
+        start = *next;
 
-        cur = nxt;
-        nxt = *++c;
+        skip_token:
+            continue;
     }
 }
 
@@ -240,10 +404,17 @@ case what: \
         FORMAT_CASE(GreaterEqual)
         FORMAT_CASE(LowerEqual)
         FORMAT_CASE(Equal)
-        FORMAT_CASE(VarX)
-        FORMAT_CASE(VarY)
         FORMAT_CASE(LParen)
         FORMAT_CASE(RParen)
+        FORMAT_CASE(Log)
+        FORMAT_CASE(Log2)
+        FORMAT_CASE(Ln)
+        FORMAT_CASE(Sqrt)
+        FORMAT_CASE(X)
+        FORMAT_CASE(Y)
+        FORMAT_CASE(E)
+        FORMAT_CASE(Pi)
+        FORMAT_CASE(Ident)
         default:
             eat_shit_and_die("Unhandled operator");
     }
@@ -301,7 +472,7 @@ Node* parse_monoop(Token** start, Token* end) {
     case Num:
         node = NEW(Node);
         node->tag = Number;
-        node->data.num = cur->value;
+        node->data.num = cur->data.number;
         
         // implements implicit multiplication: 4x becomes 4*x
         // possibly replace this with a peephole substitution to add the implicit multiply into the tokens
@@ -311,8 +482,14 @@ Node* parse_monoop(Token** start, Token* end) {
                 case Num:
                 case LParen:
                 case Abs:
-                case VarX:
-                case VarY:
+                case Log:
+                case Log2:
+                case Ln:
+                case Sqrt:
+                case X:
+                case Y:
+                case E:
+                case Pi:
                     temp_node = node;
                     node = NEW(Node);
                     node->tag = BinaryOp;
@@ -336,14 +513,27 @@ Node* parse_monoop(Token** start, Token* end) {
         node->data.m_op.n = parse_expr(start, end, 8);
         ensure_token(start, end, Abs);
         break;
-    case VarX:
+    case Log:
+    case Log2:
+    case Ln:
+    case Sqrt:
         node = NEW(Node);
-        node->tag = VariableX;
+        node->tag = BuiltinFunction;
+        node->data.function.kind = cur->kind;
+        // only multiplication and exponentiation are more associative that function call
+        // parentheses are not required
+        node->data.function.n = parse_expr(start, end, 2);
         break;
-    case VarY:
+    case X:
+    case Y:
+    case E:
+    case Pi:
         node = NEW(Node);
-        node->tag = VariableY;
+        node->tag = BuiltinConstant;
+        node->data.constant = cur->kind;
         break;
+    case Ident:
+        eat_shit_and_die("Currently usupported");
     default:
         eat_shit_and_die("Unexpected character in mono op");
     }
@@ -394,11 +584,16 @@ void traverse_ast(Node* node) {
         traverse_ast(node->data.b_op.n2);
         printf(")");
         break;
-    case VariableX:
-        printf("X");
+    case BuiltinFunction:
+        printf("(%s ", token_name(node->data.function.kind));
+        traverse_ast(node->data.function.n);
+        printf(")");
         break;
-    case VariableY:
-        printf("Y");
+    case BuiltinConstant:
+        printf("%s", token_name(node->data.constant));
+        break;
+    case Identifier:
+        printf("$%s", node->data.identifier);
         break;
     default:
         eat_shit_and_die("I've left a node type unhandled");
@@ -426,6 +621,23 @@ void traverse_ast(Node* node) {
         out[i] = code; \
     }
 
+// lane evaluation macros, did I just make a generic simd thing?
+
+#define MONO_OP_CASE(op, code) \
+case op: \
+    LANE_MAP_SINGLE(out, out, code); \
+    break;
+
+#define BINARY_OP_CASE(op, code) \
+case op: \
+    LANE_MAP(out, tmp, out, code); \
+    break;
+
+#define CONSTANT_CASE(op, code) \
+case op: \
+    LANE_MAP_NONE(out, code); \
+    break;
+
 void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], float out[LANE_WIDTH]) {
     _Alignas(LANE_ALIGN) float tmp[LANE_WIDTH];
 
@@ -437,55 +649,66 @@ void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], floa
         array_eval(node->data.m_op.n, x, y, out);
 
         switch(node->data.m_op.op) {
-        case Sub:
-            LANE_MAP_SINGLE(out, out, -a);
-            break;
-        case Abs:
-            LANE_MAP_SINGLE(out, out, fabsf(a));
-            break;
-        default:
-            eat_shit_and_die("Unhandled monoop evaluation");
+            MONO_OP_CASE(Sub, -a)
+            MONO_OP_CASE(Abs, fabsf(a))
+            default:
+                eat_shit_and_die("Unhandled monoop evaluation");
         }
         break;
     case BinaryOp:
-#define BINARY_OP_CASE(op, code) \
-case op: \
-    LANE_MAP(out, tmp, out, code); \
-    break;
         array_eval(node->data.b_op.n1, x, y, out);
         array_eval(node->data.b_op.n2, x, y, tmp);
 
         switch (node->data.b_op.op) {
-            BINARY_OP_CASE (Sub, a-b)
-            BINARY_OP_CASE (Add, a+b)
-            BINARY_OP_CASE (Mul, a*b)
-            BINARY_OP_CASE (Div, a/b)
-            BINARY_OP_CASE (Exp, powf(a,b))
-            BINARY_OP_CASE (Greater, a > b)
-            BINARY_OP_CASE (Lower, a < b)
-            BINARY_OP_CASE (GreaterEqual, a >= b)
-            BINARY_OP_CASE (LowerEqual, a <= b)
-            BINARY_OP_CASE (Equal, a == b)
+            BINARY_OP_CASE(Sub, a-b)
+            BINARY_OP_CASE(Add, a+b)
+            BINARY_OP_CASE(Mul, a*b)
+            BINARY_OP_CASE(Div, a/b)
+            BINARY_OP_CASE(Exp, powf(a,b))
+            BINARY_OP_CASE(Greater, a > b)
+            BINARY_OP_CASE(Lower, a < b)
+            BINARY_OP_CASE(GreaterEqual, a >= b)
+            BINARY_OP_CASE(LowerEqual, a <= b)
+            BINARY_OP_CASE(Equal, a == b)
             default:
                 eat_shit_and_die("Unhandled binop evaluation");
         }
         break;
-    case VariableX:
-        // copy x array to out
-        LANE_MAP_SINGLE(x, out, a)
+    // hmm right now functions are exactly line monoops just with different syntax
+    case BuiltinFunction:
+        array_eval(node->data.function.n, x, y, out);
+        
+        switch (node->data.function.kind) {
+            MONO_OP_CASE(Log, log10f(a))
+            MONO_OP_CASE(Log2, log2f(a))
+            MONO_OP_CASE(Ln, logf(a))
+            MONO_OP_CASE(Sqrt, sqrtf(a))
+            default:
+                eat_shit_and_die("Unhandled builtin function");
+        }
         break;
-    case VariableY:
-        // copy y array to out
-        LANE_MAP_SINGLE(y, out, a)
+    case BuiltinConstant:
+        switch (node->data.constant) {
+            case X:
+                LANE_MAP_SINGLE(x, out, a);
+                break;
+            case Y:
+                LANE_MAP_SINGLE(y, out, a);
+                break;
+            CONSTANT_CASE(E, M_E)
+            CONSTANT_CASE(Pi, M_PI)
+            default:
+                eat_shit_and_die("Unhandled builtin constant");
+        }
         break;
+    case Identifier:
+        eat_shit_and_die("Currently usupported");
     default:
         eat_shit_and_die("I've left a node type unhandled");
     }
 }
 
-
 int main(int argc, char *argv[]) {
-
     if (argc < 2) {
         eat_shit_and_die ("No equation provided");
     }
@@ -493,26 +716,42 @@ int main(int argc, char *argv[]) {
     Node* root;
     {
         bool debug = getenv("PARSE_DEBUG") != 0;
-        char* what = argv[1];
+        const char* what = argv[1];
         
         if (debug) {
             printf("%s\n", what);
         }
         
         ArrayList tokens;
-        lex(what, &tokens);
+        list_init(&tokens, 32*sizeof(Token));
+
+        char buf[32];
+        LexerState state = {
+            .state = LStart,
+            .ident_buf = buf,
+            .ident_buf_cursor = buf,
+            .ident_buf_end = buf + 32,
+        };
+
+        // the end pointer can be whatever if the string is null terminated
+        lex(&what, 0, &tokens, &state, true);
         
-        if (tokens.allocation == NULL) {
+        if (tokens.cursor == tokens.allocation) {
             eat_shit_and_die("No tokens lexed");
         }
 
         if (debug) {
             for (Token* tok = (Token*)tokens.allocation; tok != (Token*)tokens.cursor; tok++) {
-                if (tok->kind == Num) {
-                    printf("%f ", tok->value);
-                } else {
-                    char* string = token_name(tok->kind);
-                    printf("%s ", string);
+                switch (tok->kind) {
+                case Num:
+                    printf("%f ", tok->data.number);
+                    break;
+                case Ident:
+                    printf("$%s ", tok->data.identifier);
+                    break;
+                default:
+                    printf("%s ", token_name(tok->kind));
+                    break;
                 }
             }
             printf("\n");
