@@ -23,9 +23,9 @@ typedef enum {
     Num,
     Greater,
     Lower,
-    GreaterEqual,
-    LowerEqual,
-    Equal,
+    GreaterEq,
+    LowerEq,
+    Eq,
     LParen,
     RParen,
     // functions
@@ -220,7 +220,7 @@ void lex(const char** next, const char* end, ArrayList* tokens, LexerState* stat
                 LEXER_SINGLE_CHAR_TOKEN('/', Div)
                 LEXER_SINGLE_CHAR_TOKEN('|', Abs)
                 LEXER_SINGLE_CHAR_TOKEN('^', Exp)
-                LEXER_SINGLE_CHAR_TOKEN('=', Equal)
+                LEXER_SINGLE_CHAR_TOKEN('=', Eq)
                 LEXER_SINGLE_CHAR_TOKEN('(', LParen)
                 LEXER_SINGLE_CHAR_TOKEN(')', RParen)
                 case '<':
@@ -343,12 +343,13 @@ void lex(const char** next, const char* end, ArrayList* tokens, LexerState* stat
 
                     tok.kind = Ident;
                     tok.data.identifier = string;
+                    break;
                 } else {
                     goto skip_token; 
                 }
             case LGreater:
                 if (cur == '=') {
-                    tok.kind = GreaterEqual;
+                    tok.kind = GreaterEq;
                 // posibly split across invocations
                 } else if (cur == '\0') {
                     return;
@@ -360,7 +361,7 @@ void lex(const char** next, const char* end, ArrayList* tokens, LexerState* stat
                 break;
             case LLower:
                 if (cur == '=') {
-                    tok.kind = LowerEqual;
+                    tok.kind = LowerEq;
                 // posibly split across invocations
                 } else if (cur == '\0') {
                     return;
@@ -401,9 +402,9 @@ case what: \
         FORMAT_CASE(Num)
         FORMAT_CASE(Greater)
         FORMAT_CASE(Lower)
-        FORMAT_CASE(GreaterEqual)
-        FORMAT_CASE(LowerEqual)
-        FORMAT_CASE(Equal)
+        FORMAT_CASE(GreaterEq)
+        FORMAT_CASE(LowerEq)
+        FORMAT_CASE(Eq)
         FORMAT_CASE(LParen)
         FORMAT_CASE(RParen)
         FORMAT_CASE(Log)
@@ -433,9 +434,9 @@ int operator_precedence(Token* token) {
         return 1;
     case Greater:
     case Lower:
-    case GreaterEqual:
-    case LowerEqual:
-    case Equal:
+    case GreaterEq:
+    case LowerEq:
+    case Eq:
         return 5;
     default:
         return -1;
@@ -450,6 +451,7 @@ void ensure_token(Token** start, Token* end, TokenKind token) {
     if ((*start == end) || ((*start)->kind != token)) {
         eat_shit_and_die("Expected token missing");
     }
+    (*start)++;
 }
 
 Node* parse_monoop(Token** start, Token* end) {
@@ -667,9 +669,9 @@ void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], floa
             BINARY_OP_CASE(Exp, powf(a,b))
             BINARY_OP_CASE(Greater, a > b)
             BINARY_OP_CASE(Lower, a < b)
-            BINARY_OP_CASE(GreaterEqual, a >= b)
-            BINARY_OP_CASE(LowerEqual, a <= b)
-            BINARY_OP_CASE(Equal, a == b)
+            BINARY_OP_CASE(GreaterEq, a >= b)
+            BINARY_OP_CASE(LowerEq, a <= b)
+            BINARY_OP_CASE(Eq, a == b)
             default:
                 eat_shit_and_die("Unhandled binop evaluation");
         }
@@ -709,13 +711,15 @@ void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], floa
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) {
-        eat_shit_and_die ("No equation provided");
+    if (argc < 2 || strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
+        puts("No equation provided");
+        puts("Usage: [binary] [equation] ?[o/no] - force or disable outline algorithm");
+        return 0;
     }
 
     Node* root;
     {
-        bool debug = getenv("PARSE_DEBUG") != 0;
+        bool debug = getenv("PARSE_DEBUG") != NULL;
         const char* what = argv[1];
         
         if (debug) {
@@ -769,6 +773,23 @@ int main(int argc, char *argv[]) {
         list_free(&tokens);
     }
 
+    // -1 disabled, 0 unconfigured, 1 enabled
+    int outline = 0;
+    if (argc >= 3) {
+        if (strcmp(argv[2], "o") == 0) {
+            outline = 1;
+        } else if (strcmp(argv[2], "no") == 0) {
+            outline = -1;
+        }
+    }
+
+    // heuristic, we probably want this for equation as it gives much better quality
+    // transform equation into a subtraction so that we don't lose the gradient of the function
+    if (outline != -1 && root->tag == BinaryOp && root->data.b_op.op == Eq) {
+        outline = 1;
+        root->data.b_op.op = Sub;
+    }
+    
     initscr();
     noecho(); // dont print typed chars
     cbreak(); // dont handle clear shortcuts and buffering
@@ -784,6 +805,10 @@ int main(int argc, char *argv[]) {
 
     int w = 0;
     int h = 0;
+    // for the outlines we need to evaluate a row outside the screen
+    // so if outline is enabled these are the dimensions of the buffer but not the screen
+    int w_ = w;
+    int h_ = h;
     float* buffer = 0;
     chtype* ch_buffer = 0;
 
@@ -837,8 +862,16 @@ int main(int argc, char *argv[]) {
             w = COLS;
             h = LINES;
             
+            if (outline) {
+                w_ = w + 1;
+                h_ = h + 1;
+            } else {
+                w_ = w;
+                h_ = h;
+            }
+            
             // round up to a multiple of LANE_WIDTH
-            int size = ((w*h + LANE_WIDTH - 1) / LANE_WIDTH) * LANE_WIDTH;
+            int size = ((w_*h_ + LANE_WIDTH - 1) / LANE_WIDTH) * LANE_WIDTH;
 
             if (buffer) {
                 free(buffer);
@@ -866,9 +899,9 @@ int main(int argc, char *argv[]) {
             float d = zoom;
 
             int i = 0;
-            for (int y = 0; y < h; y++) {
+            for (int y = 0; y < h_; y++) {
                 xf = xf0;
-                for (int x = 0; x < w; x++) {
+                for (int x = 0; x < w_; x++) {
                     x_arr[i] = xf;
                     y_arr[i] = yf;
                     xf += d;
@@ -887,14 +920,36 @@ int main(int argc, char *argv[]) {
                 array_eval(root, x_arr, y_arr, out);
             }
 
-            for (int j = 0; j < w*h; j++) {
-                ch_buffer[j] = buffer[j] > 0.0 ? 'X' : ' ';
+#define CELL_CHECK(x, y) \
+if (((x >= 0) && (x < w_) && (y >= 0) && (y < h_))) { \
+    buffer[(x)+(y)*w_] > 0 ? positive++ : negative++; \
+}
+
+            if (outline == 1) {
+                // stolen from https://www.youtube.com/watch?v=EvvWOaLgKVU
+                for (int y = 0; y < h_; y++) {
+                    for (int x = 0; x < w_; x++) {
+                        int positive = 0;
+                        int negative = 0;
+                        CELL_CHECK(x,y)
+                        CELL_CHECK(x+1,y)
+                        CELL_CHECK(x,y+1)
+                        CELL_CHECK(x+1,y+1)
+
+                        // ch_buffer[x+y*w_] = (positive > 0 && positive < 3 && negative > 0) ? 'X' : ' ';
+                        ch_buffer[x+y*w_] = (positive > 0 && negative > 0) ? 'X' : ' ';
+                    }
+                }
+            } else {
+                for (int j = 0; j < w_*h; j++) {
+                    ch_buffer[j] = buffer[j] > 0.0 ? 'X' : ' ';
+                }
             }
 
             chtype* ch_out = ch_buffer;
             for (int k = 0; k < h; k++) {
                 mvaddchnstr(k, 0, ch_out, w);
-                ch_out += w;
+                ch_out += w_;
             }
 
             dirty = false;

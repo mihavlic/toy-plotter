@@ -10,7 +10,7 @@
             "name": "Debug",
             "preLaunchTask": "meson_build",
             "program": "${workspaceFolder}/build/src/plotter",
-            "args": ["4"],
+            "args": ["(x+y+1)*(x-y-1)*(-x+y+1)*(-x-y-1)<5"],
             "env": {
                 "PARSE_DEBUG": "1"
             },
