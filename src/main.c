@@ -497,7 +497,9 @@ Node* parse_monoop(Token** start, Token* end) {
             switch ((*start)->kind) {
                 case Num:
                 case LParen:
-                case Abs:
+                // sadly Abs is ambiguous as we can't tell whether the | we encounter is starting another abs or closing one 
+                // was already open, this is a WONTFIX
+                // case Abs:
                 case Log:
                 case Log2:
                 case Ln:
@@ -555,6 +557,16 @@ Node* parse_monoop(Token** start, Token* end) {
         node = NEW(Node);
         node->kind = BuiltinConstant;
         node->data.constant = cur->kind;
+
+        // a more restricted implicit multiplication
+        if (*start != end && (*start)->kind == LParen) {
+            temp_node = node;
+            node = NEW(Node);
+            node->kind = BinaryOp;
+            node->data.b_op.op = Mul;
+            node->data.b_op.n1 = temp_node;
+            node->data.b_op.n2 = parse_expr(start, end, 2 - 1);
+        }
         break;
     case Ident:
         eat_shit_and_die("Currently usupported");
