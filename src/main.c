@@ -198,19 +198,21 @@ case char: \
     tok.kind = token; \
     break;
 
-// this comment is here for historic purposes
-/* // ends upon reaching 'end' or encountering a '\0', if string is null terminated, end is not required to meaningful
-// the parser can be buffered as it preserves state between invocation, but a number or an identifier cannot span
-// two invocation as currently the lexer uses direct pointer indices that are not valid between allocations
-//      FIXME either copy characters into a separate buffer or take into account buffering and try to stitch together two identifiers after they are tokenized
-//      probably gonna take option 1 as we already need to copy out identifiers */
+// ends upon reaching 'end' or encountering a '\0', if string is null terminated, end is not required to meaningful
+// this comment is here for posterity, I've chosen to copy identifiers to a separate buffer
+/* 
+    // the parser can be buffered as it preserves state between invocation, but a number or an identifier cannot span
+    // two invocation as currently the lexer uses direct pointer indices that are not valid between allocations
+    // FIXME either copy characters into a separate buffer or take into account buffering and try to stitch together two identifiers after they are tokenized
+    // probably gonna take option 1 as we already need to copy out identifiers 
+*/
 void lex(const char** next, const char* end, ArrayList* tokens, LexerState* state, bool flush) {
     const char* start = *next;
     Token tok;
 
     while (1) {
         char cur = '\0';
-        // be careful not to dereference src if it's at the end, output null if it is
+        // be careful not to dereference src if it's at the end, null signals end in all cases
         if (*next != end && **next != '\0') {
             cur = **next;
             *next += 1;
@@ -269,6 +271,7 @@ void lex(const char** next, const char* end, ArrayList* tokens, LexerState* stat
                     while (start != *next) {
                         *state->ident_buf_cursor++ = *start++;
                     }
+
                     // if the next character is null, the string will possibly be split between
                     // two invocations, in that case just return, in the next invocation
                     // we again check that the next character is a string and if it is we continue,
@@ -316,7 +319,6 @@ void lex(const char** next, const char* end, ArrayList* tokens, LexerState* stat
                     // reset ident_buf_cursor since it's not needed anymore 
                     state->ident_buf_cursor = state->ident_buf;
 
-                    int found = -1;
                     // iterate through the array of builtin strings
                     for (int i = 0; builtins[i].name != NULL; i++) {
                         // iterate through the characters
@@ -326,26 +328,21 @@ void lex(const char** next, const char* end, ArrayList* tokens, LexerState* stat
                             // char is the same as the len (index + one for the null byte == len)
                             if (builtins[i].name[j] == '\0' && j == len) {
                                 if (j == len) {
-                                    found = i;
-                                    goto found;
+                                    // we have succesfully found a matching string, set its token kind and go make the token
+                                    tok.kind = builtins[i].builtin;
+                                    goto make_token;
                                 }
                                 break;
                             }
-                            // check that the characters are the same for both
-                            // the moment they're not, bail
+                            // check that the characters are the same for both the reference string and the buffer
+                            // once they differ we stop and go to the next character
                             if (builtins[i].name[j] != state->ident_buf[j]) {
                                 break;
                             }
                         }
                     }
-
-                    found:
-                    if (found != -1) {
-                        tok.kind = builtins[found].builtin;
-                        break;
-                    }
                     
-                    // TODO replace with a smarter allocation scheme
+                    // TODO replace with our own linear allocator
                     // copy to a null terminated string
                     char* string = malloc(len+1);
                     memcpy(string, state->ident_buf, len);
@@ -361,7 +358,7 @@ void lex(const char** next, const char* end, ArrayList* tokens, LexerState* stat
                 if (cur == '=') {
                     tok.kind = GreaterEq;
                 // posibly split across invocations
-                } else if (cur == '\0') {
+                } else if (cur == '\0' && !flush) {
                     return;
                 } else {
                     tok.kind = Greater;
@@ -373,7 +370,7 @@ void lex(const char** next, const char* end, ArrayList* tokens, LexerState* stat
                 if (cur == '=') {
                     tok.kind = LowerEq;
                 // posibly split across invocations
-                } else if (cur == '\0') {
+                } else if (cur == '\0' && !flush) {
                     return;
                 } else {
                     tok.kind = Lower;
@@ -384,6 +381,8 @@ void lex(const char** next, const char* end, ArrayList* tokens, LexerState* stat
             default:
                 eat_shit_and_die("Unhandled lexer state");
         }
+
+        make_token:
 
         list_reserve(tokens, sizeof(Token));
         *(Token*)tokens->cursor = tok;
@@ -490,16 +489,16 @@ Node* parse_monoop(Token** start, Token* end) {
         node->kind = Number;
         node->data.num = cur->data.number;
         
-        // implements implicit multiplication: 4x becomes 4*x
-        // possibly replace this with a peephole substitution to add the implicit multiply into the tokens
-        // TODO along with this replace some exponentiations with chained multiplications
+        // implements implicit multiplication where we don't need to type a '*' to multiply
+        // 4x becomes 4*x
         if (*start != end) {
             switch ((*start)->kind) {
                 case Num:
                 case LParen:
-                // sadly Abs is ambiguous as we can't tell whether the | we encounter is starting another abs or closing one 
-                // was already open, this is a WONTFIX
-                // case Abs:
+                // sadly Abs is ambiguous as we can't tell whether the | we encounter is starting another abs or closing one
+                // desmos actually tries to guess what part of the wats we wanted to put into abs and automatically inserts a closing abs
+                // which sidesteps the ambiguity 
+                //   case Abs:
                 case Log:
                 case Log2:
                 case Ln:
@@ -731,7 +730,8 @@ void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], floa
                 eat_shit_and_die("Unhandled binop evaluation");
         }
         break;
-    // hmm right now functions are exactly line monoops just with different syntax
+    // hmm right now functions are exactly like monoops just with different syntax
+    // TODO consider representing them as such
     case BuiltinFunction:
         array_eval(node->data.function.n, x, y, out);
         
@@ -796,7 +796,7 @@ int main(int argc, char *argv[]) {
             .ident_buf_end = buf + 32,
         };
 
-        // the end pointer can be whatever if the string is null terminated
+        // the end pointer is never dereferenced and the lexer also checks for null chars so in this case we can have it be 0
         lex(&what, 0, &tokens, &state, true);
         
         if (tokens.cursor == tokens.allocation) {
@@ -888,6 +888,7 @@ int main(int argc, char *argv[]) {
 
     int w = 0;
     int h = 0;
+    
     // for the outlines we need to evaluate a row outside the screen
     // so if outline is enabled these are the dimensions of the buffer but not the screen
     int w_ = w;
