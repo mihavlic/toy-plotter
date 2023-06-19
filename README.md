@@ -12,12 +12,12 @@ meson compile -C build
 
 `./build/src/plotter [equation] ?[o/no]`
 
-- [o\/no] -- *o*utline / *no* outline -- force outline algorithm, *quality outline* vs *only zero values*
+- [o\/no] – *o*utline / *no* outline – force outline algorithm, *quality outline* vs *only zero values*
 
 ##### Keyboard
 
-- arrows -- moves the viewport
-- W -- zoom in
-- Z -- zoom out
-- r -- reset viewport to origin
-- q -- quit
+- arrows – moves the viewport
+- W – zoom in
+- Z – zoom out
+- r – reset viewport to origin
+- q – quit
