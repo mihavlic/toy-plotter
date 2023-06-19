@@ -1,3 +1,5 @@
+![preview](/screenshot.png)
+
 ### Running
 
 Single file with the meson build system.
