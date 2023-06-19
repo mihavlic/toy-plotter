@@ -7,7 +7,7 @@
 
 #include <ncurses.h>
 
-_Noreturn void eat_shit_and_die(char* err) {
+_Noreturn void panic(char* err) {
     fputs(err, stderr);
     fputs("\n", stderr);
     exit(-1);
@@ -253,14 +253,14 @@ void lex(const char** next, const char* end, ArrayList* tokens, LexerState* stat
                         state->state = LNumber;
                         goto skip_token;
                     } else {
-                        eat_shit_and_die("Invalid character in lexer");
+                        panic("Invalid character in lexer");
                     }
                 }
                 break;
             case LNumber:
                 if (!((cur >= '0' && cur <= '9') || cur == '.')) {
                     if (*next - start > state->ident_buf_end - state->ident_buf_cursor) {
-                        eat_shit_and_die("Number is too long");
+                        panic("Number is too long");
                     }
                     
                     // since we have already moved src* to another character after the current one, we need revert
@@ -299,7 +299,7 @@ void lex(const char** next, const char* end, ArrayList* tokens, LexerState* stat
             case LIdent:
                 if (!((cur >= 'a' && cur <= 'z') || (cur >= 'Z' && cur <= 'Z'))) {
                     if (*next - start > state->ident_buf_end - state->ident_buf_cursor) {
-                        eat_shit_and_die("Ident is too long");
+                        panic("Ident is too long");
                     }
                     
                     // since we have already moved src* to another character after the current one, we need revert
@@ -379,7 +379,7 @@ void lex(const char** next, const char* end, ArrayList* tokens, LexerState* stat
                 }
                 break;
             default:
-                eat_shit_and_die("Unhandled lexer state");
+                panic("Unhandled lexer state");
         }
 
         make_token:
@@ -430,7 +430,7 @@ case what: \
         FORMAT_CASE(Tan)
         FORMAT_CASE(CoTan)
         default:
-            eat_shit_and_die("Unhandled operator");
+            panic("Unhandled operator");
     }
 }
 
@@ -462,14 +462,14 @@ Node* parse_expr(Token** start, Token* end, int precedence);
 
 void ensure_token(Token** start, Token* end, TokenKind token) {
     if ((*start == end) || ((*start)->kind != token)) {
-        eat_shit_and_die("Expected token missing");
+        panic("Expected token missing");
     }
     (*start)++;
 }
 
 Node* parse_monoop(Token** start, Token* end) {
     if (*start == end) {
-        eat_shit_and_die("Expected expression");
+        panic("Expected expression");
     }
 
     Node* node;
@@ -568,9 +568,9 @@ Node* parse_monoop(Token** start, Token* end) {
         }
         break;
     case Ident:
-        eat_shit_and_die("Currently usupported");
+        panic("Currently usupported");
     default:
-        eat_shit_and_die("Unexpected character in mono op");
+        panic("Unexpected character in mono op");
     }
     
     return node;
@@ -630,7 +630,7 @@ void traverse_ast(Node* node) {
         printf("$%s", node->data.identifier);
         break;
     default:
-        eat_shit_and_die("I've left a node type unhandled");
+        panic("I've left a node type unhandled");
     }
 }
 
@@ -651,7 +651,7 @@ void free_ast(Node* node) {
     case Identifier:
         break;
     default:
-        eat_shit_and_die("I've left a node type unhandled");
+        panic("I've left a node type unhandled");
     }
     free(node);
 }
@@ -708,7 +708,7 @@ void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], floa
             MONO_OP_CASE(Sub, -a)
             MONO_OP_CASE(Abs, fabsf(a))
             default:
-                eat_shit_and_die("Unhandled monoop evaluation");
+                panic("Unhandled monoop evaluation");
         }
         break;
     case BinaryOp:
@@ -727,7 +727,7 @@ void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], floa
             BINARY_OP_CASE(LowerEq, a <= b)
             BINARY_OP_CASE(Eq, a == b)
             default:
-                eat_shit_and_die("Unhandled binop evaluation");
+                panic("Unhandled binop evaluation");
         }
         break;
     // hmm right now functions are exactly like monoops just with different syntax
@@ -745,7 +745,7 @@ void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], floa
             MONO_OP_CASE(Tan, tanf(a))
             MONO_OP_CASE(CoTan, cosf(a)/sinf(a))
             default:
-                eat_shit_and_die("Unhandled builtin function");
+                panic("Unhandled builtin function");
         }
         break;
     case BuiltinConstant:
@@ -759,13 +759,13 @@ void array_eval(const Node* node, float x[LANE_WIDTH], float y[LANE_WIDTH], floa
             CONSTANT_CASE(E, M_E)
             CONSTANT_CASE(Pi, M_PI)
             default:
-                eat_shit_and_die("Unhandled builtin constant");
+                panic("Unhandled builtin constant");
         }
         break;
     case Identifier:
-        eat_shit_and_die("Currently usupported");
+        panic("Currently usupported");
     default:
-        eat_shit_and_die("I've left a node type unhandled");
+        panic("I've left a node type unhandled");
     }
 }
 
@@ -800,7 +800,7 @@ int main(int argc, char *argv[]) {
         lex(&what, 0, &tokens, &state, true);
         
         if (tokens.cursor == tokens.allocation) {
-            eat_shit_and_die("No tokens lexed");
+            panic("No tokens lexed");
         }
 
         if (debug) {
