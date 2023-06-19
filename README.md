@@ -12,7 +12,7 @@ meson compile -C build
 
 `./build/src/plotter [equation] ?[o/no]`
 
-- [o\/no] – *o*utline / *no* outline – force outline algorithm, *quality outline* vs *only zero values*
+- [o\/no] – **o**utline / **no** outline – force outline algorithm, **quality outline** vs **only zero values**
 
 ##### Keyboard
 
