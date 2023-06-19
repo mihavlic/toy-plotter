@@ -23,3 +23,7 @@ meson compile -C build
 - Z – zoom out
 - r – reset viewport to origin
 - q – quit
+
+### Trivia
+
+This was the result of getting nerd-sniped to write a parser in C. It later motivated my high school graduation project [here](https://github.com/mihavlic/function-renderer), which used a Rust rewrite of this parser [here](https://github.com/mihavlic/function-renderer/blob/553147ab93c6b306b2f4faa4b330e109636acd04/src/parse/parser.rs).
